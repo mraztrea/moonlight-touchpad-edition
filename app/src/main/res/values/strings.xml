@@ -314,5 +314,5 @@
     <string name="sponsor_note_label">赞助备注 / Sponsor note</string>
     <string name="sponsor_note_copied">赞助备注已复制。如果付款应用支持留言，可以粘贴到付款备注里。/ Sponsor note copied. Paste it into the payment note if your payment app supports notes.</string>
     <string name="sponsor_qr_updated">赞助二维码已更新 / Sponsor QR codes updated</string>
-    <string name="sponsor_config_url">https://raw.githubusercontent.com/wyc0820/moonlight-touchpad-edition/master/sponsor/sponsor.json</string>
+    <string name="sponsor_config_url">https://raw.githubusercontent.com/wyc0820/moonlight-touchpad-edition/main/sponsor/sponsor.json</string>
 </resources>
