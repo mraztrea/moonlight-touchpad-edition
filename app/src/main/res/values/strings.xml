@@ -197,6 +197,9 @@
     <string name="category_input_settings">Input Settings</string>
     <string name="title_checkbox_touchscreen_trackpad">Use the touchscreen as a trackpad</string>
     <string name="summary_checkbox_touchscreen_trackpad">If enabled, the touchscreen acts like a trackpad. If disabled, the touchscreen directly controls the mouse cursor.</string>
+    <string name="title_seekbar_touchpad_mouse_speed">触摸板指针速度</string>
+    <string name="summary_seekbar_touchpad_mouse_speed">调整平板键盘触摸板的指针移动速度。默认 40%，可按自己的手感提高或降低。</string>
+    <string name="suffix_seekbar_touchpad_mouse_speed">%</string>
     <string name="title_checkbox_absolute_mouse_mode">Remote desktop mouse mode</string>
     <string name="summary_checkbox_absolute_mouse_mode">This can make mouse acceleration behave more naturally for remote desktop usage, but it is incompatible with many games.</string>
     <string name="title_checkbox_mouse_nav_buttons">Enable back and forward mouse buttons</string>
@@ -300,4 +303,16 @@
     <string name="analogscroll_none">None (both sticks move the mouse)</string>
     <string name="analogscroll_right">Right analog stick</string>
     <string name="analogscroll_left">Left analog stick</string>
+
+    <string name="sponsor_title">赞助 / Sponsor</string>
+    <string name="sponsor_summary">如果这个版本帮到了你，可以自愿赞助支持后续优化。也可以填写希望适配的设备型号或触摸板需求。\n\nIf this build helps you, you can optionally sponsor future improvements and tell me which device or touchpad behavior you want optimized next.</string>
+    <string name="sponsor_device_hint">选填：设备型号、键盘/触摸板型号、希望优化的功能\nOptional: device model, keyboard/touchpad model, or feature request</string>
+    <string name="sponsor_copy_note">复制赞助备注 / Copy sponsor note</string>
+    <string name="sponsor_wechat">微信支付 / WeChat Pay</string>
+    <string name="sponsor_alipay">支付宝 / Alipay</string>
+    <string name="sponsor_note_prefix">Moonlight 触摸板版赞助备注 / Moonlight Touchpad Edition sponsor request:</string>
+    <string name="sponsor_note_label">赞助备注 / Sponsor note</string>
+    <string name="sponsor_note_copied">赞助备注已复制。如果付款应用支持留言，可以粘贴到付款备注里。/ Sponsor note copied. Paste it into the payment note if your payment app supports notes.</string>
+    <string name="sponsor_qr_updated">赞助二维码已更新 / Sponsor QR codes updated</string>
+    <string name="sponsor_config_url">https://raw.githubusercontent.com/wyc0820/moonlight-touchpad-edition/master/sponsor/sponsor.json</string>
 </resources>

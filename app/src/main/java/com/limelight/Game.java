@@ -60,6 +60,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.util.Rational;
 import android.view.Display;
 import android.view.InputDevice;
@@ -93,6 +94,39 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         OnSystemUiVisibilityChangeListener, GameGestures, StreamView.InputCallbacks,
         PerfOverlayListener, UsbDriverService.UsbDriverStateListener, View.OnKeyListener {
     private int lastButtonState = 0;
+    private boolean touchpadMouseActive = false;
+    private float lastTouchpadMouseX, lastTouchpadMouseY;
+    private float touchpadMouseRemainderX, touchpadMouseRemainderY;
+    private boolean touchpadOneFingerTapActive = false;
+    private boolean touchpadPrimaryButtonDown = false;
+    private long touchpadOneFingerTapStartTime;
+    private float touchpadOneFingerTapStartX, touchpadOneFingerTapStartY;
+    private float touchpadOneFingerTapMaxDistance;
+    private long lastTouchpadLeftTapTime;
+    private float lastTouchpadLeftTapX, lastTouchpadLeftTapY;
+    private boolean touchpadTapDragCandidateActive = false;
+    private long touchpadTapDragStartTime;
+    private float touchpadTapDragStartX, touchpadTapDragStartY;
+    private boolean touchpadScrollActive = false;
+    private int touchpadScrollDirection = 0;
+    private float lastTouchpadScrollX, lastTouchpadScrollY;
+    private float touchpadScrollRemainderX, touchpadScrollRemainderY;
+    private boolean touchpadTwoFingerTapActive = false;
+    private long touchpadTwoFingerTapStartTime;
+    private float touchpadTwoFingerTapStartX, touchpadTwoFingerTapStartY;
+    private float touchpadTwoFingerTapMaxDistance;
+    private boolean touchpadPinchActive = false;
+    private float lastTouchpadPinchSpan;
+    private float touchpadPinchStartSpan;
+    private float touchpadPinchRemainder;
+    private boolean touchpadThreeFingerActive = false;
+    private boolean touchpadThreeFingerTapActive = false;
+    private boolean touchpadThreeFingerGestureSent = false;
+    private boolean touchpadAltTabActive = false;
+    private long touchpadThreeFingerStartTime;
+    private float touchpadThreeFingerStartX, touchpadThreeFingerStartY;
+    private float touchpadThreeFingerLastStepX, touchpadThreeFingerLastStepY;
+    private float touchpadThreeFingerMaxDistance;
 
     // Only 2 touches are supported
     private final TouchContext[] touchContextMap = new TouchContext[2];
@@ -108,6 +142,27 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private static final int STYLUS_UP_DEAD_ZONE_RADIUS = 50;
 
     private static final int THREE_FINGER_TAP_THRESHOLD = 300;
+    private static final float TOUCHPAD_SCROLL_SPEED_FACTOR = 7.0f;
+    private static final int TOUCHPAD_SCROLL_DIRECTION_NONE = 0;
+    private static final int TOUCHPAD_SCROLL_DIRECTION_VERTICAL = 1;
+    private static final int TOUCHPAD_SCROLL_DIRECTION_HORIZONTAL = 2;
+    private static final float TOUCHPAD_SCROLL_LOCK_THRESHOLD = 35.0f;
+    private static final int TOUCHPAD_ONE_FINGER_TAP_TIME_THRESHOLD = 250;
+    private static final float TOUCHPAD_ONE_FINGER_TAP_DISTANCE_THRESHOLD = 12.0f;
+    private static final int TOUCHPAD_DOUBLE_TAP_DRAG_TIME_THRESHOLD = 380;
+    private static final float TOUCHPAD_DOUBLE_TAP_DRAG_DISTANCE_THRESHOLD = 220.0f;
+    private static final int TOUCHPAD_TAP_DRAG_HOLD_DELAY = 110;
+    private static final float TOUCHPAD_TAP_DRAG_MOVE_THRESHOLD = 4.0f;
+    private static final int TOUCHPAD_TAP_DRAG_CLICK_BREAKER_DISTANCE = 48;
+    private static final int TOUCHPAD_TWO_FINGER_TAP_TIME_THRESHOLD = 350;
+    private static final float TOUCHPAD_TWO_FINGER_TAP_DISTANCE_THRESHOLD = 50.0f;
+    private static final float TOUCHPAD_PINCH_START_THRESHOLD = 10.0f;
+    private static final float TOUCHPAD_PINCH_TRANSLATION_REJECTION_FACTOR = 0.9f;
+    private static final float TOUCHPAD_PINCH_ZOOM_SPEED_FACTOR = 8.0f;
+    private static final int TOUCHPAD_THREE_FINGER_TAP_TIME_THRESHOLD = 350;
+    private static final float TOUCHPAD_THREE_FINGER_TAP_DISTANCE_THRESHOLD = 50.0f;
+    private static final float TOUCHPAD_THREE_FINGER_SWIPE_THRESHOLD = 70.0f;
+    private static final float TOUCHPAD_THREE_FINGER_ALT_TAB_STEP_THRESHOLD = 180.0f;
 
     private ControllerHandler controllerHandler;
     private KeyboardTranslator keyboardTranslator;
@@ -115,10 +170,47 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private PreferenceConfiguration prefConfig;
     private SharedPreferences tombstonePrefs;
+    private final Handler touchpadGestureHandler = new Handler(Looper.getMainLooper());
 
     private NvConnection conn;
     private SpinnerDialog spinner;
     private boolean displayedFailureDialog = false;
+    private final Runnable inputRecaptureRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (!grabbedInput || inputCaptureProvider == null) {
+                return;
+            }
+
+            inputCaptureProvider.disableCapture();
+            inputCaptureProvider.enableCapture();
+            setMetaKeyCaptureState(true);
+        }
+    };
+    private final InputManager.InputDeviceListener inputDeviceChangeListener = new InputManager.InputDeviceListener() {
+        @Override
+        public void onInputDeviceAdded(int deviceId) {
+            scheduleInputRecapture("added " + deviceId);
+        }
+
+        @Override
+        public void onInputDeviceRemoved(int deviceId) {
+            scheduleInputRecapture("removed " + deviceId);
+        }
+
+        @Override
+        public void onInputDeviceChanged(int deviceId) {
+            scheduleInputRecapture("changed " + deviceId);
+        }
+    };
+    private final Runnable touchpadTapDragRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (touchpadTapDragCandidateActive && !touchpadPrimaryButtonDown) {
+                startTouchpadTapDrag();
+            }
+        }
+    };
     private boolean connecting = false;
     private boolean connected = false;
     private boolean autoEnterPip = false;
@@ -491,6 +583,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         InputManager inputManager = (InputManager) getSystemService(Context.INPUT_SERVICE);
         inputManager.registerInputDeviceListener(keyboardTranslator, null);
+        inputManager.registerInputDeviceListener(inputDeviceChangeListener, null);
 
         // Initialize touch contexts
         for (int i = 0; i < touchContextMap.length; i++) {
@@ -1003,6 +1096,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
     }
 
+    private void scheduleInputRecapture(String reason) {
+        Handler h = getWindow().getDecorView().getHandler();
+        if (h != null) {
+            h.removeCallbacks(inputRecaptureRunnable);
+            h.postDelayed(inputRecaptureRunnable, 250);
+            h.postDelayed(inputRecaptureRunnable, 1200);
+        }
+    }
+
     @Override
     @TargetApi(Build.VERSION_CODES.N)
     public void onMultiWindowModeChanged(boolean isInMultiWindowMode) {
@@ -1035,6 +1137,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (keyboardTranslator != null) {
             InputManager inputManager = (InputManager) getSystemService(Context.INPUT_SERVICE);
             inputManager.unregisterInputDeviceListener(keyboardTranslator);
+            inputManager.unregisterInputDeviceListener(inputDeviceChangeListener);
         }
 
         if (lowLatencyWifiLock != null) {
@@ -1334,7 +1437,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         boolean handled = false;
 
-        if (ControllerHandler.isGameControllerDevice(event.getDevice())) {
+        if (!isXiaomiPadKeyboardDevice(event.getDevice()) &&
+                ControllerHandler.isGameControllerDevice(event.getDevice())) {
             // Always try the controller handler first, unless it's an alphanumeric keyboard device.
             // Otherwise, controller handler will eat keyboard d-pad events.
             handled = controllerHandler.handleButtonDown(event);
@@ -1354,7 +1458,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
             // We'll send it as a raw key event if we have a key mapping, otherwise we'll send it
             // as UTF-8 text (if it's a printable character).
-            short translated = keyboardTranslator.translate(event.getKeyCode(), event.getDeviceId());
+            short translated = translateKeyEventForHost(event);
             if (translated == 0) {
                 // Make sure it has a valid Unicode representation and it's not a dead character
                 // (which we don't support). If those are true, we can send it as UTF-8 text.
@@ -1376,7 +1480,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
 
             conn.sendKeyboardInput(translated, KeyboardPacket.KEY_DOWN, getModifierState(event),
-                    keyboardTranslator.hasNormalizedMapping(event.getKeyCode(), event.getDeviceId()) ? 0 : MoonBridge.SS_KBE_FLAG_NON_NORMALIZED);
+                    getKeyboardFlagsForHost(event));
         }
 
         return true;
@@ -1414,7 +1518,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
 
         boolean handled = false;
-        if (ControllerHandler.isGameControllerDevice(event.getDevice())) {
+        if (!isXiaomiPadKeyboardDevice(event.getDevice()) &&
+                ControllerHandler.isGameControllerDevice(event.getDevice())) {
             // Always try the controller handler first, unless it's an alphanumeric keyboard device.
             // Otherwise, controller handler will eat keyboard d-pad events.
             handled = controllerHandler.handleButtonUp(event);
@@ -1431,7 +1536,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 return false;
             }
 
-            short translated = keyboardTranslator.translate(event.getKeyCode(), event.getDeviceId());
+            short translated = translateKeyEventForHost(event);
             if (translated == 0) {
                 // If we sent this event as UTF-8 on key down, also report that it was handled
                 // when we get the key up event for it.
@@ -1440,7 +1545,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
 
             conn.sendKeyboardInput(translated, KeyboardPacket.KEY_UP, getModifierState(event),
-                    keyboardTranslator.hasNormalizedMapping(event.getKeyCode(), event.getDeviceId()) ? 0 : MoonBridge.SS_KBE_FLAG_NON_NORMALIZED);
+                    getKeyboardFlagsForHost(event));
         }
 
         return true;
@@ -1761,6 +1866,615 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
     }
 
+    private static boolean isTouchpadEvent(MotionEvent event, int eventSource) {
+        if (eventSource == InputDevice.SOURCE_TOUCHPAD) {
+            return true;
+        }
+
+        InputDevice device = event.getDevice();
+        if (device == null) {
+            return false;
+        }
+
+        String deviceName = device.getName() != null ? device.getName().toLowerCase(Locale.US) : "";
+        boolean looksLikeTabletKeyboardTouchpad =
+                deviceName.contains("touchpad") ||
+                (deviceName.contains("xiaomi") && deviceName.contains("touch"));
+
+        return (device.supportsSource(InputDevice.SOURCE_TOUCHPAD) || looksLikeTabletKeyboardTouchpad) &&
+                ((eventSource & InputDevice.SOURCE_CLASS_POSITION) != 0 ||
+                        (eventSource & InputDevice.SOURCE_CLASS_POINTER) != 0 ||
+                        (eventSource & InputDevice.SOURCE_TOUCHPAD) == InputDevice.SOURCE_TOUCHPAD);
+    }
+
+    private static boolean isXiaomiPadKeyboardDevice(InputDevice device) {
+        if (device == null || device.getName() == null) {
+            return false;
+        }
+
+        String deviceName = device.getName().toLowerCase(Locale.US);
+        return deviceName.contains("xiaomi") &&
+                deviceName.contains("keyboard") &&
+                !deviceName.contains("consumer control");
+    }
+
+    private short translateKeyEventForHost(KeyEvent event) {
+        return keyboardTranslator.translate(event.getKeyCode(),
+                isXiaomiPadKeyboardDevice(event.getDevice()) ? -1 : event.getDeviceId());
+    }
+
+    private byte getKeyboardFlagsForHost(KeyEvent event) {
+        if (isXiaomiPadKeyboardDevice(event.getDevice())) {
+            return 0;
+        }
+
+        return keyboardTranslator.hasNormalizedMapping(event.getKeyCode(), event.getDeviceId()) ?
+                0 : MoonBridge.SS_KBE_FLAG_NON_NORMALIZED;
+    }
+
+    private static short clampToShort(int value) {
+        return (short)Math.max(Short.MIN_VALUE, Math.min(Short.MAX_VALUE, value));
+    }
+
+    private boolean sendMouseScrollAmounts(int verticalAmount, int horizontalAmount) {
+        boolean sent = false;
+
+        if (verticalAmount != 0) {
+            conn.sendMouseHighResScroll(clampToShort(verticalAmount));
+            sent = true;
+        }
+
+        if (horizontalAmount != 0) {
+            conn.sendMouseHighResHScroll(clampToShort(horizontalAmount));
+            sent = true;
+        }
+
+        return sent;
+    }
+
+    private boolean sendMouseScrollFromAxes(MotionEvent event) {
+        float verticalScroll = event.getAxisValue(MotionEvent.AXIS_VSCROLL);
+        float horizontalScroll = event.getAxisValue(MotionEvent.AXIS_HSCROLL);
+
+        for (int i = 0; i < event.getHistorySize(); i++) {
+            verticalScroll += event.getHistoricalAxisValue(MotionEvent.AXIS_VSCROLL, i);
+            horizontalScroll += event.getHistoricalAxisValue(MotionEvent.AXIS_HSCROLL, i);
+        }
+
+        if (Math.abs(verticalScroll) >= Math.abs(horizontalScroll)) {
+            horizontalScroll = 0;
+        }
+        else {
+            verticalScroll = 0;
+        }
+
+        return sendMouseScrollAmounts(Math.round(verticalScroll * 120),
+                                      Math.round(horizontalScroll * 120));
+    }
+
+    private static float getPointerAverageX(MotionEvent event) {
+        float averageX = 0;
+        for (int i = 0; i < event.getPointerCount(); i++) {
+            averageX += event.getX(i);
+        }
+        return averageX / event.getPointerCount();
+    }
+
+    private static float getPointerAverageY(MotionEvent event) {
+        float averageY = 0;
+        for (int i = 0; i < event.getPointerCount(); i++) {
+            averageY += event.getY(i);
+        }
+        return averageY / event.getPointerCount();
+    }
+
+    private void sendMouseRightClick() {
+        conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_RIGHT);
+        conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
+    }
+
+    private void sendMouseLeftClick() {
+        conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_LEFT);
+        conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
+    }
+
+    private void scheduleTouchpadTapDrag() {
+        touchpadGestureHandler.removeCallbacks(touchpadTapDragRunnable);
+        touchpadGestureHandler.postDelayed(touchpadTapDragRunnable, TOUCHPAD_TAP_DRAG_HOLD_DELAY);
+    }
+
+    private void cancelTouchpadTapDrag() {
+        touchpadGestureHandler.removeCallbacks(touchpadTapDragRunnable);
+    }
+
+    private void startTouchpadTapDrag() {
+        cancelTouchpadTapDrag();
+        touchpadTapDragCandidateActive = false;
+        touchpadPrimaryButtonDown = true;
+        lastTouchpadLeftTapTime = 0;
+
+        conn.sendMouseMove((short)0, (short)TOUCHPAD_TAP_DRAG_CLICK_BREAKER_DISTANCE);
+        conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_LEFT);
+        conn.sendMouseMove((short)0, (short)-TOUCHPAD_TAP_DRAG_CLICK_BREAKER_DISTANCE);
+    }
+
+    private void sendMouseMiddleClick() {
+        conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_MIDDLE);
+        conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_MIDDLE);
+    }
+
+    private void sendKeyboardInput(int keyCode, byte direction, byte modifiers) {
+        short keyMap = keyboardTranslator.translate(keyCode, -1);
+        if (keyMap != 0) {
+            conn.sendKeyboardInput(keyMap, direction, modifiers, (byte)0);
+        }
+    }
+
+    private void sendKeyTap(int keyCode, byte modifiers) {
+        sendKeyboardInput(keyCode, KeyboardPacket.KEY_DOWN, modifiers);
+        sendKeyboardInput(keyCode, KeyboardPacket.KEY_UP, modifiers);
+    }
+
+    private void sendKeyboardChord(int keyCode, int modifierKeyCode, byte modifiers) {
+        sendKeyboardInput(modifierKeyCode, KeyboardPacket.KEY_DOWN, modifiers);
+        sendKeyTap(keyCode, modifiers);
+        sendKeyboardInput(modifierKeyCode, KeyboardPacket.KEY_UP, (byte)0);
+    }
+
+    private void sendTouchpadAltTab(boolean reverse) {
+        if (!touchpadAltTabActive) {
+            sendKeyboardInput(KeyEvent.KEYCODE_ALT_LEFT, KeyboardPacket.KEY_DOWN, KeyboardPacket.MODIFIER_ALT);
+            touchpadAltTabActive = true;
+        }
+
+        if (reverse) {
+            sendKeyboardInput(KeyEvent.KEYCODE_SHIFT_LEFT, KeyboardPacket.KEY_DOWN,
+                    (byte)(KeyboardPacket.MODIFIER_ALT | KeyboardPacket.MODIFIER_SHIFT));
+            sendKeyTap(KeyEvent.KEYCODE_TAB, (byte)(KeyboardPacket.MODIFIER_ALT | KeyboardPacket.MODIFIER_SHIFT));
+            sendKeyboardInput(KeyEvent.KEYCODE_SHIFT_LEFT, KeyboardPacket.KEY_UP, KeyboardPacket.MODIFIER_ALT);
+        }
+        else {
+            sendKeyTap(KeyEvent.KEYCODE_TAB, KeyboardPacket.MODIFIER_ALT);
+        }
+    }
+
+    private void releaseTouchpadAltTab() {
+        if (touchpadAltTabActive) {
+            sendKeyboardInput(KeyEvent.KEYCODE_ALT_LEFT, KeyboardPacket.KEY_UP, (byte)0);
+            touchpadAltTabActive = false;
+        }
+    }
+
+    private void sendCtrlMouseScroll(short amount) {
+        short ctrlKeyMap = keyboardTranslator.translate(KeyEvent.KEYCODE_CTRL_LEFT, -1);
+        if (ctrlKeyMap != 0) {
+            conn.sendKeyboardInput(ctrlKeyMap, KeyboardPacket.KEY_DOWN, KeyboardPacket.MODIFIER_CTRL, (byte)0);
+        }
+
+        conn.sendMouseHighResScroll(amount);
+
+        if (ctrlKeyMap != 0) {
+            conn.sendKeyboardInput(ctrlKeyMap, KeyboardPacket.KEY_UP, (byte)0, (byte)0);
+        }
+    }
+
+    private static float getTwoPointerSpan(MotionEvent event) {
+        if (event.getPointerCount() < 2) {
+            return 0;
+        }
+
+        return (float)Math.sqrt(Math.pow(event.getX(0) - event.getX(1), 2) +
+                Math.pow(event.getY(0) - event.getY(1), 2));
+    }
+
+    private boolean trySendTouchpadTwoFingerScroll(MotionEvent event, int eventSource) {
+        if (!isTouchpadEvent(event, eventSource)) {
+            touchpadScrollActive = false;
+            touchpadScrollDirection = TOUCHPAD_SCROLL_DIRECTION_NONE;
+            touchpadTwoFingerTapActive = false;
+            touchpadPinchActive = false;
+            return false;
+        }
+
+        if (event.getActionMasked() == MotionEvent.ACTION_POINTER_DOWN && event.getPointerCount() == 2) {
+            touchpadMouseActive = false;
+            touchpadOneFingerTapActive = false;
+            touchpadTapDragCandidateActive = false;
+            lastTouchpadLeftTapTime = 0;
+            touchpadMouseRemainderX = touchpadMouseRemainderY = 0;
+            touchpadScrollActive = true;
+            touchpadScrollDirection = TOUCHPAD_SCROLL_DIRECTION_NONE;
+            touchpadScrollRemainderX = touchpadScrollRemainderY = 0;
+            touchpadPinchActive = false;
+            touchpadPinchRemainder = 0;
+            lastTouchpadScrollX = getPointerAverageX(event);
+            lastTouchpadScrollY = getPointerAverageY(event);
+            lastTouchpadPinchSpan = getTwoPointerSpan(event);
+            touchpadPinchStartSpan = lastTouchpadPinchSpan;
+            touchpadTwoFingerTapActive = true;
+            touchpadTwoFingerTapStartTime = event.getEventTime();
+            touchpadTwoFingerTapStartX = getPointerAverageX(event);
+            touchpadTwoFingerTapStartY = getPointerAverageY(event);
+            touchpadTwoFingerTapMaxDistance = 0;
+            return true;
+        }
+
+        if ((event.getActionMasked() == MotionEvent.ACTION_CANCEL ||
+                event.getActionMasked() == MotionEvent.ACTION_UP ||
+                event.getActionMasked() == MotionEvent.ACTION_POINTER_UP) &&
+                (touchpadTwoFingerTapActive || touchpadScrollActive || event.getPointerCount() > 1)) {
+            if (touchpadTwoFingerTapActive &&
+                    event.getEventTime() - touchpadTwoFingerTapStartTime <= TOUCHPAD_TWO_FINGER_TAP_TIME_THRESHOLD &&
+                    touchpadTwoFingerTapMaxDistance <= TOUCHPAD_TWO_FINGER_TAP_DISTANCE_THRESHOLD) {
+                sendMouseRightClick();
+            }
+            touchpadMouseActive = false;
+            touchpadOneFingerTapActive = false;
+            lastTouchpadLeftTapTime = 0;
+            touchpadMouseRemainderX = touchpadMouseRemainderY = 0;
+            touchpadScrollActive = false;
+            touchpadScrollDirection = TOUCHPAD_SCROLL_DIRECTION_NONE;
+            touchpadTwoFingerTapActive = false;
+            touchpadPinchActive = false;
+            touchpadScrollRemainderX = touchpadScrollRemainderY = 0;
+            touchpadPinchRemainder = 0;
+            return true;
+        }
+
+        if (event.getPointerCount() < 2) {
+            touchpadScrollActive = false;
+            touchpadScrollDirection = TOUCHPAD_SCROLL_DIRECTION_NONE;
+            touchpadTwoFingerTapActive = false;
+            touchpadPinchActive = false;
+            touchpadScrollRemainderX = touchpadScrollRemainderY = 0;
+            touchpadPinchRemainder = 0;
+            return false;
+        }
+
+        if (event.getActionMasked() != MotionEvent.ACTION_MOVE) {
+            return false;
+        }
+
+        float averageX = getPointerAverageX(event);
+        float averageY = getPointerAverageY(event);
+        float currentSpan = getTwoPointerSpan(event);
+        float spanDelta = currentSpan - lastTouchpadPinchSpan;
+        float totalSpanDelta = currentSpan - touchpadPinchStartSpan;
+        float totalTranslationDelta = (float)Math.sqrt(Math.pow(averageX - touchpadTwoFingerTapStartX, 2) +
+                Math.pow(averageY - touchpadTwoFingerTapStartY, 2));
+
+        if (!touchpadScrollActive) {
+            touchpadScrollActive = true;
+            touchpadScrollDirection = TOUCHPAD_SCROLL_DIRECTION_NONE;
+            touchpadScrollRemainderX = touchpadScrollRemainderY = 0;
+            lastTouchpadScrollX = averageX;
+            lastTouchpadScrollY = averageY;
+            lastTouchpadPinchSpan = currentSpan;
+            touchpadPinchStartSpan = currentSpan;
+            touchpadTwoFingerTapStartX = averageX;
+            touchpadTwoFingerTapStartY = averageY;
+            return true;
+        }
+
+        if (touchpadTwoFingerTapActive) {
+            float distance = (float)Math.sqrt(Math.pow(averageX - touchpadTwoFingerTapStartX, 2) +
+                    Math.pow(averageY - touchpadTwoFingerTapStartY, 2));
+            touchpadTwoFingerTapMaxDistance = Math.max(touchpadTwoFingerTapMaxDistance, distance);
+            if (touchpadTwoFingerTapMaxDistance > TOUCHPAD_TWO_FINGER_TAP_DISTANCE_THRESHOLD ||
+                    Math.abs(spanDelta) > TOUCHPAD_PINCH_START_THRESHOLD) {
+                touchpadTwoFingerTapActive = false;
+            }
+        }
+
+        if (!touchpadPinchActive &&
+                touchpadScrollDirection == TOUCHPAD_SCROLL_DIRECTION_NONE &&
+                Math.abs(totalSpanDelta) > TOUCHPAD_PINCH_START_THRESHOLD &&
+                Math.abs(totalSpanDelta) > totalTranslationDelta * TOUCHPAD_PINCH_TRANSLATION_REJECTION_FACTOR) {
+            touchpadPinchActive = true;
+            touchpadScrollDirection = TOUCHPAD_SCROLL_DIRECTION_NONE;
+            touchpadScrollRemainderX = touchpadScrollRemainderY = 0;
+            touchpadTwoFingerTapActive = false;
+        }
+
+        if (touchpadPinchActive) {
+            touchpadPinchRemainder += spanDelta * TOUCHPAD_PINCH_ZOOM_SPEED_FACTOR;
+            lastTouchpadScrollX = averageX;
+            lastTouchpadScrollY = averageY;
+            lastTouchpadPinchSpan = currentSpan;
+
+            int zoomScroll = Math.round(touchpadPinchRemainder);
+            if (zoomScroll != 0) {
+                touchpadPinchRemainder -= zoomScroll;
+                sendCtrlMouseScroll(clampToShort(zoomScroll));
+            }
+            return true;
+        }
+
+        touchpadScrollRemainderX += (averageX - lastTouchpadScrollX) * TOUCHPAD_SCROLL_SPEED_FACTOR;
+        touchpadScrollRemainderY += (averageY - lastTouchpadScrollY) * TOUCHPAD_SCROLL_SPEED_FACTOR;
+        lastTouchpadScrollX = averageX;
+        lastTouchpadScrollY = averageY;
+        lastTouchpadPinchSpan = currentSpan;
+
+        if (touchpadScrollDirection == TOUCHPAD_SCROLL_DIRECTION_NONE) {
+            if (Math.max(Math.abs(touchpadScrollRemainderX), Math.abs(touchpadScrollRemainderY)) < TOUCHPAD_SCROLL_LOCK_THRESHOLD) {
+                return true;
+            }
+
+            touchpadScrollDirection = Math.abs(touchpadScrollRemainderY) >= Math.abs(touchpadScrollRemainderX) ?
+                    TOUCHPAD_SCROLL_DIRECTION_VERTICAL : TOUCHPAD_SCROLL_DIRECTION_HORIZONTAL;
+        }
+
+        if (touchpadScrollDirection == TOUCHPAD_SCROLL_DIRECTION_VERTICAL) {
+            touchpadScrollRemainderX = 0;
+        }
+        else if (touchpadScrollDirection == TOUCHPAD_SCROLL_DIRECTION_HORIZONTAL) {
+            touchpadScrollRemainderY = 0;
+        }
+
+        int horizontalScroll = Math.round(touchpadScrollRemainderX);
+        int verticalScroll = Math.round(touchpadScrollRemainderY);
+
+        if (horizontalScroll != 0) {
+            touchpadScrollRemainderX -= horizontalScroll;
+        }
+        if (verticalScroll != 0) {
+            touchpadScrollRemainderY -= verticalScroll;
+        }
+
+        sendMouseScrollAmounts(verticalScroll, horizontalScroll);
+        return true;
+    }
+
+    private boolean trySendTouchpadThreeFingerGesture(MotionEvent event, int eventSource) {
+        if (!isTouchpadEvent(event, eventSource)) {
+            touchpadThreeFingerActive = false;
+            touchpadThreeFingerTapActive = false;
+            touchpadThreeFingerGestureSent = false;
+            releaseTouchpadAltTab();
+            return false;
+        }
+
+        if (event.getPointerCount() < 3) {
+            if (touchpadThreeFingerActive) {
+                touchpadThreeFingerActive = false;
+                touchpadThreeFingerTapActive = false;
+                touchpadThreeFingerGestureSent = false;
+                releaseTouchpadAltTab();
+                return true;
+            }
+            return false;
+        }
+
+        if (event.getActionMasked() == MotionEvent.ACTION_POINTER_DOWN && event.getPointerCount() == 3) {
+            touchpadMouseActive = false;
+            touchpadOneFingerTapActive = false;
+            touchpadTapDragCandidateActive = false;
+            touchpadScrollActive = false;
+            touchpadTwoFingerTapActive = false;
+            touchpadPinchActive = false;
+            lastTouchpadLeftTapTime = 0;
+
+            touchpadThreeFingerActive = true;
+            touchpadThreeFingerTapActive = true;
+            touchpadThreeFingerGestureSent = false;
+            touchpadThreeFingerStartTime = event.getEventTime();
+            touchpadThreeFingerStartX = getPointerAverageX(event);
+            touchpadThreeFingerStartY = getPointerAverageY(event);
+            touchpadThreeFingerLastStepX = touchpadThreeFingerStartX;
+            touchpadThreeFingerLastStepY = touchpadThreeFingerStartY;
+            touchpadThreeFingerMaxDistance = 0;
+            return true;
+        }
+
+        if (!touchpadThreeFingerActive) {
+            return false;
+        }
+
+        float averageX = getPointerAverageX(event);
+        float averageY = getPointerAverageY(event);
+        float deltaX = averageX - touchpadThreeFingerStartX;
+        float deltaY = averageY - touchpadThreeFingerStartY;
+        float stepDeltaX = averageX - touchpadThreeFingerLastStepX;
+        float distance = (float)Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+        touchpadThreeFingerMaxDistance = Math.max(touchpadThreeFingerMaxDistance, distance);
+
+        if (event.getActionMasked() == MotionEvent.ACTION_MOVE) {
+            if (touchpadAltTabActive && Math.abs(stepDeltaX) >= TOUCHPAD_THREE_FINGER_ALT_TAB_STEP_THRESHOLD) {
+                sendTouchpadAltTab(stepDeltaX < 0);
+                touchpadThreeFingerLastStepX = averageX;
+                touchpadThreeFingerLastStepY = averageY;
+                return true;
+            }
+
+            if (!touchpadThreeFingerGestureSent &&
+                    touchpadThreeFingerMaxDistance >= TOUCHPAD_THREE_FINGER_SWIPE_THRESHOLD) {
+                touchpadThreeFingerTapActive = false;
+                touchpadThreeFingerGestureSent = true;
+                touchpadThreeFingerLastStepX = averageX;
+                touchpadThreeFingerLastStepY = averageY;
+
+                if (Math.abs(deltaX) > Math.abs(deltaY)) {
+                    sendTouchpadAltTab(deltaX < 0);
+                }
+                else if (deltaY < 0) {
+                    sendKeyboardChord(KeyEvent.KEYCODE_TAB, KeyEvent.KEYCODE_META_LEFT, KeyboardPacket.MODIFIER_META);
+                }
+                else {
+                    sendKeyboardChord(KeyEvent.KEYCODE_D, KeyEvent.KEYCODE_META_LEFT, KeyboardPacket.MODIFIER_META);
+                }
+                return true;
+            }
+        }
+
+        if (event.getActionMasked() == MotionEvent.ACTION_CANCEL ||
+                event.getActionMasked() == MotionEvent.ACTION_UP ||
+                event.getActionMasked() == MotionEvent.ACTION_POINTER_UP) {
+            if (!touchpadThreeFingerGestureSent &&
+                    touchpadThreeFingerTapActive &&
+                    event.getEventTime() - touchpadThreeFingerStartTime <= TOUCHPAD_THREE_FINGER_TAP_TIME_THRESHOLD &&
+                    touchpadThreeFingerMaxDistance <= TOUCHPAD_THREE_FINGER_TAP_DISTANCE_THRESHOLD) {
+                sendMouseMiddleClick();
+            }
+
+            touchpadThreeFingerActive = false;
+            touchpadThreeFingerTapActive = false;
+            touchpadThreeFingerGestureSent = false;
+            releaseTouchpadAltTab();
+            return true;
+        }
+
+        return true;
+    }
+
+    private boolean trySendTouchpadRelativeMove(MotionEvent event, int eventSource) {
+        if (!isTouchpadEvent(event, eventSource)) {
+            touchpadMouseActive = false;
+            touchpadOneFingerTapActive = false;
+            touchpadTapDragCandidateActive = false;
+            cancelTouchpadTapDrag();
+            return false;
+        }
+
+        boolean primaryButtonPressed = (event.getButtonState() & MotionEvent.BUTTON_PRIMARY) != 0;
+        if ((event.getActionMasked() == MotionEvent.ACTION_BUTTON_PRESS ||
+                event.getActionMasked() == MotionEvent.ACTION_DOWN) &&
+                primaryButtonPressed && !touchpadPrimaryButtonDown) {
+            touchpadPrimaryButtonDown = true;
+            touchpadOneFingerTapActive = false;
+            touchpadTapDragCandidateActive = false;
+            cancelTouchpadTapDrag();
+            lastTouchpadLeftTapTime = 0;
+            conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_LEFT);
+            return true;
+        }
+
+        if (event.getActionMasked() == MotionEvent.ACTION_DOWN &&
+                !touchpadPrimaryButtonDown &&
+                lastTouchpadLeftTapTime != 0 &&
+                event.getEventTime() - lastTouchpadLeftTapTime <= TOUCHPAD_DOUBLE_TAP_DRAG_TIME_THRESHOLD) {
+            float distance = (float)Math.sqrt(Math.pow(event.getX(0) - lastTouchpadLeftTapX, 2) +
+                    Math.pow(event.getY(0) - lastTouchpadLeftTapY, 2));
+            if (distance <= TOUCHPAD_DOUBLE_TAP_DRAG_DISTANCE_THRESHOLD) {
+                touchpadMouseActive = true;
+                touchpadTapDragCandidateActive = true;
+                touchpadOneFingerTapActive = false;
+                touchpadTapDragStartTime = event.getEventTime();
+                touchpadTapDragStartX = event.getX(0);
+                touchpadTapDragStartY = event.getY(0);
+                lastTouchpadMouseX = event.getX(0);
+                lastTouchpadMouseY = event.getY(0);
+                scheduleTouchpadTapDrag();
+                return true;
+            }
+        }
+
+        if (event.getActionMasked() == MotionEvent.ACTION_CANCEL ||
+                event.getActionMasked() == MotionEvent.ACTION_UP ||
+                event.getActionMasked() == MotionEvent.ACTION_BUTTON_RELEASE ||
+                event.getActionMasked() == MotionEvent.ACTION_POINTER_UP ||
+                event.getPointerCount() != 1) {
+            if (touchpadPrimaryButtonDown) {
+                touchpadPrimaryButtonDown = false;
+                conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
+            }
+            else if (event.getActionMasked() == MotionEvent.ACTION_UP &&
+                    touchpadTapDragCandidateActive) {
+                cancelTouchpadTapDrag();
+                sendMouseLeftClick();
+                lastTouchpadLeftTapTime = 0;
+            }
+            else if (event.getActionMasked() == MotionEvent.ACTION_UP &&
+                    touchpadOneFingerTapActive &&
+                    event.getEventTime() - touchpadOneFingerTapStartTime <= TOUCHPAD_ONE_FINGER_TAP_TIME_THRESHOLD &&
+                    touchpadOneFingerTapMaxDistance <= TOUCHPAD_ONE_FINGER_TAP_DISTANCE_THRESHOLD) {
+                sendMouseLeftClick();
+                lastTouchpadLeftTapTime = event.getEventTime();
+                lastTouchpadLeftTapX = event.getX(0);
+                lastTouchpadLeftTapY = event.getY(0);
+            }
+            touchpadMouseActive = false;
+            touchpadOneFingerTapActive = false;
+            touchpadTapDragCandidateActive = false;
+            cancelTouchpadTapDrag();
+            touchpadMouseRemainderX = touchpadMouseRemainderY = 0;
+            return true;
+        }
+
+        if (event.getActionMasked() == MotionEvent.ACTION_DOWN ||
+                event.getActionMasked() == MotionEvent.ACTION_HOVER_ENTER) {
+            touchpadMouseActive = true;
+            touchpadOneFingerTapActive = true;
+            touchpadOneFingerTapStartTime = event.getEventTime();
+            touchpadOneFingerTapStartX = event.getX(0);
+            touchpadOneFingerTapStartY = event.getY(0);
+            touchpadOneFingerTapMaxDistance = 0;
+            lastTouchpadMouseX = event.getX(0);
+            lastTouchpadMouseY = event.getY(0);
+            return true;
+        }
+
+        if (event.getActionMasked() != MotionEvent.ACTION_MOVE &&
+                event.getActionMasked() != MotionEvent.ACTION_HOVER_MOVE) {
+            return false;
+        }
+
+        if (!touchpadMouseActive) {
+            touchpadMouseActive = true;
+            touchpadOneFingerTapActive = false;
+            lastTouchpadMouseX = event.getX(0);
+            lastTouchpadMouseY = event.getY(0);
+            return true;
+        }
+
+        if (touchpadOneFingerTapActive) {
+            float distance = (float)Math.sqrt(Math.pow(event.getX(0) - touchpadOneFingerTapStartX, 2) +
+                    Math.pow(event.getY(0) - touchpadOneFingerTapStartY, 2));
+            touchpadOneFingerTapMaxDistance = Math.max(touchpadOneFingerTapMaxDistance, distance);
+            if (touchpadOneFingerTapMaxDistance > TOUCHPAD_ONE_FINGER_TAP_DISTANCE_THRESHOLD) {
+                touchpadOneFingerTapActive = false;
+            }
+        }
+
+        if (touchpadTapDragCandidateActive) {
+            float distance = (float)Math.sqrt(Math.pow(event.getX(0) - touchpadTapDragStartX, 2) +
+                    Math.pow(event.getY(0) - touchpadTapDragStartY, 2));
+            if (distance >= TOUCHPAD_TAP_DRAG_MOVE_THRESHOLD ||
+                    event.getEventTime() - touchpadTapDragStartTime >= TOUCHPAD_TAP_DRAG_HOLD_DELAY) {
+                cancelTouchpadTapDrag();
+                startTouchpadTapDrag();
+            }
+        }
+
+        float speedFactor = prefConfig.touchpadMouseSpeed / 100.0f;
+        touchpadMouseRemainderX += (event.getX(0) - lastTouchpadMouseX) * speedFactor;
+        touchpadMouseRemainderY += (event.getY(0) - lastTouchpadMouseY) * speedFactor;
+        lastTouchpadMouseX = event.getX(0);
+        lastTouchpadMouseY = event.getY(0);
+
+        int deltaX = Math.round(touchpadMouseRemainderX);
+        int deltaY = Math.round(touchpadMouseRemainderY);
+
+        if (deltaX != 0) {
+            touchpadMouseRemainderX -= deltaX;
+        }
+        if (deltaY != 0) {
+            touchpadMouseRemainderY -= deltaY;
+        }
+
+        if (deltaX != 0 || deltaY != 0) {
+            if (prefConfig.absoluteMouseMode) {
+                conn.sendMouseMoveAsMousePosition(clampToShort(deltaX), clampToShort(deltaY),
+                        (short)streamView.getWidth(), (short)streamView.getHeight());
+            }
+            else {
+                conn.sendMouseMove(clampToShort(deltaX), clampToShort(deltaY));
+            }
+        }
+
+        return true;
+    }
+
     // Returns true if the event was consumed
     // NB: View is only present if called from a view callback
     private boolean handleMotionEvent(View view, MotionEvent event) {
@@ -1771,20 +2485,23 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         int eventSource = event.getSource();
         int deviceSources = event.getDevice() != null ? event.getDevice().getSources() : 0;
-        if ((eventSource & InputDevice.SOURCE_CLASS_JOYSTICK) != 0) {
+        boolean touchpadEvent = isTouchpadEvent(event, eventSource);
+        if (!touchpadEvent && (eventSource & InputDevice.SOURCE_CLASS_JOYSTICK) != 0) {
             if (controllerHandler.handleMotionEvent(event)) {
                 return true;
             }
         }
-        else if ((deviceSources & InputDevice.SOURCE_CLASS_JOYSTICK) != 0 && controllerHandler.tryHandleTouchpadEvent(event)) {
+        else if (!touchpadEvent && (deviceSources & InputDevice.SOURCE_CLASS_JOYSTICK) != 0 && controllerHandler.tryHandleTouchpadEvent(event)) {
             return true;
         }
-        else if ((eventSource & InputDevice.SOURCE_CLASS_POINTER) != 0 ||
+        else if (touchpadEvent ||
+                 (eventSource & InputDevice.SOURCE_CLASS_POINTER) != 0 ||
                  (eventSource & InputDevice.SOURCE_CLASS_POSITION) != 0 ||
                  eventSource == InputDevice.SOURCE_MOUSE_RELATIVE)
         {
             // This case is for mice and non-finger touch devices
-            if (eventSource == InputDevice.SOURCE_MOUSE ||
+            if (touchpadEvent ||
+                    eventSource == InputDevice.SOURCE_MOUSE ||
                     (eventSource & InputDevice.SOURCE_CLASS_POSITION) != 0 || // SOURCE_TOUCHPAD
                     eventSource == InputDevice.SOURCE_MOUSE_RELATIVE ||
                     (event.getPointerCount() >= 1 &&
@@ -1822,9 +2539,26 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     return true;
                 }
 
+                if (event.getActionMasked() == MotionEvent.ACTION_SCROLL) {
+                    sendMouseScrollFromAxes(event);
+                    lastButtonState = buttonState;
+                    return true;
+                }
+
+                if (trySendTouchpadThreeFingerGesture(event, eventSource)) {
+                    lastButtonState = buttonState;
+                    return true;
+                }
+
+                if (trySendTouchpadTwoFingerScroll(event, eventSource)) {
+                    lastButtonState = buttonState;
+                    return true;
+                }
+
                 // Always update the position before sending any button events. If we're
                 // dealing with a stylus without hover support, our position might be
                 // significantly different than before.
+                boolean handledRelativeMouseMotion = false;
                 if (inputCaptureProvider.eventHasRelativeMouseAxes(event)) {
                     // Send the deltas straight from the motion event
                     short deltaX = (short)inputCaptureProvider.getRelativeAxisX(event);
@@ -1839,9 +2573,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         else {
                             conn.sendMouseMove(deltaX, deltaY);
                         }
+                        handledRelativeMouseMotion = true;
                     }
                 }
-                else if ((eventSource & InputDevice.SOURCE_CLASS_POSITION) != 0) {
+                if (!handledRelativeMouseMotion && trySendTouchpadRelativeMove(event, eventSource)) {
+                    lastButtonState = buttonState;
+                    return true;
+                }
+                else if (!handledRelativeMouseMotion && (eventSource & InputDevice.SOURCE_CLASS_POSITION) != 0) {
                     // If this input device is not associated with the view itself (like a trackpad),
                     // we'll convert the device-specific coordinates to use to send the cursor position.
                     // This really isn't ideal but it's probably better than nothing.
@@ -1874,12 +2613,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 else if (view != null) {
                     // Otherwise send absolute position based on the view for SOURCE_CLASS_POINTER
                     updateMousePosition(view, event);
-                }
-
-                if (event.getActionMasked() == MotionEvent.ACTION_SCROLL) {
-                    // Send the vertical scroll packet
-                    conn.sendMouseHighResScroll((short)(event.getAxisValue(MotionEvent.AXIS_VSCROLL) * 120));
-                    conn.sendMouseHighResHScroll((short)(event.getAxisValue(MotionEvent.AXIS_HSCROLL) * 120));
                 }
 
                 if ((changedButtons & MotionEvent.BUTTON_PRIMARY) != 0) {
