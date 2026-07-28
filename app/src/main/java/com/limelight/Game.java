@@ -2465,10 +2465,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
         }
 
-        if (event.getActionMasked() == MotionEvent.ACTION_CANCEL ||
-                event.getActionMasked() == MotionEvent.ACTION_UP ||
-                event.getActionMasked() == MotionEvent.ACTION_BUTTON_RELEASE ||
-                event.getActionMasked() == MotionEvent.ACTION_POINTER_UP ||
+        if (isTouchpadGestureEndAction(event.getActionMasked()) ||
                 event.getPointerCount() != 1) {
             if (touchpadPrimaryButtonDown) {
                 touchpadPrimaryButtonDown = false;
@@ -2564,6 +2561,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         return toolType == MotionEvent.TOOL_TYPE_FINGER;
     }
 
+    static boolean isTouchpadGestureEndAction(int action) {
+        return action == MotionEvent.ACTION_CANCEL ||
+                action == MotionEvent.ACTION_UP ||
+                action == MotionEvent.ACTION_BUTTON_RELEASE ||
+                action == MotionEvent.ACTION_POINTER_UP ||
+                action == MotionEvent.ACTION_HOVER_EXIT;
+    }
+
     // Returns true if the event was consumed
     // NB: View is only present if called from a view callback
     private boolean handleMotionEvent(View view, MotionEvent event) {
@@ -2575,9 +2580,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     streamView.hasPointerCapture();
             android.util.Log.i("Moonlight", String.format(Locale.US,
                     "MOTION src=0x%08X devSrc=0x%08X tool=%d action=%d ptrs=%d " +
-                            "x=%.1f y=%.1f relX=%.2f relY=%.2f capture=%b grabbed=%b touchpadEvent=%b",
+                            "buttons=0x%08X actionButton=0x%08X x=%.1f y=%.1f " +
+                            "relX=%.2f relY=%.2f capture=%b grabbed=%b touchpadEvent=%b",
                     eventSource, device != null ? device.getSources() : 0,
                     event.getToolType(0), event.getActionMasked(), event.getPointerCount(),
+                    event.getButtonState(), event.getActionButton(),
                     event.getX(0), event.getY(0),
                     event.getAxisValue(MotionEvent.AXIS_RELATIVE_X),
                     event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y),

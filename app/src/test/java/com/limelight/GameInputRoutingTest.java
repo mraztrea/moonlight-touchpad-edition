@@ -10,6 +10,12 @@ import static org.junit.Assert.assertTrue;
 
 public class GameInputRoutingTest {
     @Test
+    public void hoverExitEndsTouchpadGestureBeforeAbsoluteFallback() {
+        assertTrue(Game.isTouchpadGestureEndAction(MotionEvent.ACTION_HOVER_EXIT));
+        assertFalse(Game.isTouchpadGestureEndAction(MotionEvent.ACTION_HOVER_MOVE));
+    }
+
+    @Test
     public void relativeAxesNeverFallThroughToTouchpadCoordinateDeltas() {
         assertFalse(Game.shouldTryTouchpadRelativeMove(true));
         assertTrue(Game.shouldTryTouchpadRelativeMove(false));
