@@ -16,6 +16,18 @@ public class GameInputRoutingTest {
     }
 
     @Test
+    public void secondaryButtonActionsBypassTouchpadGestureRouting() {
+        assertTrue(Game.isTouchpadSecondaryButtonAction(
+                MotionEvent.ACTION_BUTTON_PRESS, MotionEvent.BUTTON_SECONDARY));
+        assertTrue(Game.isTouchpadSecondaryButtonAction(
+                MotionEvent.ACTION_BUTTON_RELEASE, MotionEvent.BUTTON_SECONDARY));
+        assertFalse(Game.isTouchpadSecondaryButtonAction(
+                MotionEvent.ACTION_DOWN, MotionEvent.BUTTON_SECONDARY));
+        assertFalse(Game.isTouchpadSecondaryButtonAction(
+                MotionEvent.ACTION_BUTTON_PRESS, MotionEvent.BUTTON_PRIMARY));
+    }
+
+    @Test
     public void relativeAxesNeverFallThroughToTouchpadCoordinateDeltas() {
         assertFalse(Game.shouldTryTouchpadRelativeMove(true));
         assertTrue(Game.shouldTryTouchpadRelativeMove(false));

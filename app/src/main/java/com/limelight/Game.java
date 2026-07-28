@@ -2569,6 +2569,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 action == MotionEvent.ACTION_HOVER_EXIT;
     }
 
+    static boolean isTouchpadSecondaryButtonAction(int action, int actionButton) {
+        return actionButton == MotionEvent.BUTTON_SECONDARY &&
+                (action == MotionEvent.ACTION_BUTTON_PRESS ||
+                        action == MotionEvent.ACTION_BUTTON_RELEASE);
+    }
+
     // Returns true if the event was consumed
     // NB: View is only present if called from a view callback
     private boolean handleMotionEvent(View view, MotionEvent event) {
@@ -2646,6 +2652,18 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 if (!inputCaptureProvider.isCapturingActive()) {
                     // We return true here because otherwise the events may end up causing
                     // Android to synthesize d-pad events.
+                    return true;
+                }
+
+                if (touchpadEvent && isTouchpadSecondaryButtonAction(
+                        event.getActionMasked(), event.getActionButton())) {
+                    if (event.getActionMasked() == MotionEvent.ACTION_BUTTON_PRESS) {
+                        conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_RIGHT);
+                    }
+                    else {
+                        conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
+                    }
+                    lastButtonState = buttonState;
                     return true;
                 }
 
