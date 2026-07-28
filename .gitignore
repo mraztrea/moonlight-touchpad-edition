@@ -44,3 +44,4 @@ app/.externalNativeBuild/
 
 # NDK stuff
 .cxx/
+motion.log

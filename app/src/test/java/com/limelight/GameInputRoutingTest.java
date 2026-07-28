@@ -5,6 +5,7 @@ import android.view.MotionEvent;
 
 import org.junit.Test;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -73,6 +74,18 @@ public class GameInputRoutingTest {
                 sources, MotionEvent.TOOL_TYPE_STYLUS, true, true, true));
         assertFalse(Game.isTouchpadEvent(InputDevice.SOURCE_MOUSE_RELATIVE,
                 sources, MotionEvent.TOOL_TYPE_ERASER, true, true, true));
+    }
+
+    @Test
+    public void relativeAxesKeepHostCursorMovingWhenAndroidCursorIsClamped() {
+        // Android cursor pinned at x=0: the coordinate delta saturates to zero,
+        // but AXIS_RELATIVE_X still carries the finger motion.
+        assertEquals(-8.0f, Game.selectTouchpadMouseDelta(true, -8.0f, 0.0f, 0.0f), 0.0f);
+    }
+
+    @Test
+    public void devicesWithoutRelativeAxesKeepCoordinateDeltas() {
+        assertEquals(5.0f, Game.selectTouchpadMouseDelta(false, 0.0f, 15.0f, 10.0f), 0.0f);
     }
 
     @Test

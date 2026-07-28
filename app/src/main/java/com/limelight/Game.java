@@ -86,6 +86,7 @@ import java.lang.reflect.Method;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
+import java.util.HashSet;
 import java.util.Locale;
 
 
@@ -101,13 +102,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean touchpadOneFingerTapActive = false;
     private boolean touchpadPrimaryButtonDown = false;
     private long touchpadOneFingerTapStartTime;
-    private float touchpadOneFingerTapStartX, touchpadOneFingerTapStartY;
     private float touchpadOneFingerTapMaxDistance;
+    private float touchpadOneFingerTravel;
+    private boolean touchpadGestureUsesRelativeAxes = false;
+    private final HashSet<Integer> touchpadRelativeAxisDevices = new HashSet<>();
     private long lastTouchpadLeftTapTime;
     private float lastTouchpadLeftTapX, lastTouchpadLeftTapY;
     private boolean touchpadTapDragCandidateActive = false;
     private long touchpadTapDragStartTime;
-    private float touchpadTapDragStartX, touchpadTapDragStartY;
     private boolean touchpadScrollActive = false;
     private int touchpadScrollDirection = 0;
     private float lastTouchpadScrollX, lastTouchpadScrollY;
@@ -2053,13 +2055,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         touchpadOneFingerTapActive = false;
         touchpadPrimaryButtonDown = false;
         touchpadOneFingerTapStartTime = 0;
-        touchpadOneFingerTapStartX = touchpadOneFingerTapStartY = 0;
         touchpadOneFingerTapMaxDistance = 0;
+        touchpadOneFingerTravel = 0;
         lastTouchpadLeftTapTime = 0;
         lastTouchpadLeftTapX = lastTouchpadLeftTapY = 0;
         touchpadTapDragCandidateActive = false;
         touchpadTapDragStartTime = 0;
-        touchpadTapDragStartX = touchpadTapDragStartY = 0;
 
         touchpadScrollActive = false;
         touchpadScrollDirection = TOUCHPAD_SCROLL_DIRECTION_NONE;
@@ -2423,6 +2424,36 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         return true;
     }
 
+    private static float getAccumulatedAxisValue(MotionEvent event, int axis) {
+        float value = event.getAxisValue(axis);
+        for (int i = 0; i < event.getHistorySize(); i++) {
+            value += event.getHistoricalAxisValue(axis, i);
+        }
+        return value;
+    }
+
+    private static boolean deviceReportsTouchpadRelativeAxes(MotionEvent event) {
+        InputDevice device = event.getDevice();
+        return device != null &&
+                device.getMotionRange(MotionEvent.AXIS_RELATIVE_X, event.getSource()) != null &&
+                device.getMotionRange(MotionEvent.AXIS_RELATIVE_Y, event.getSource()) != null;
+    }
+
+    // The delta source must stay stable for the whole gesture to avoid
+    // double-counting motion, so it is only chosen at gesture boundaries.
+    private void beginTouchpadMouseGesture(MotionEvent event) {
+        touchpadGestureUsesRelativeAxes = deviceReportsTouchpadRelativeAxes(event) ||
+                touchpadRelativeAxisDevices.contains(event.getDeviceId());
+        touchpadOneFingerTravel = 0;
+        lastTouchpadMouseX = event.getX(0);
+        lastTouchpadMouseY = event.getY(0);
+    }
+
+    static float selectTouchpadMouseDelta(boolean useRelativeAxes, float relativeDelta,
+                                          float absolutePosition, float lastPosition) {
+        return useRelativeAxes ? relativeDelta : (absolutePosition - lastPosition);
+    }
+
     private boolean trySendTouchpadRelativeMove(MotionEvent event, int eventSource) {
         if (!isTouchpadEvent(event, eventSource)) {
             touchpadMouseActive = false;
@@ -2456,10 +2487,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 touchpadTapDragCandidateActive = true;
                 touchpadOneFingerTapActive = false;
                 touchpadTapDragStartTime = event.getEventTime();
-                touchpadTapDragStartX = event.getX(0);
-                touchpadTapDragStartY = event.getY(0);
-                lastTouchpadMouseX = event.getX(0);
-                lastTouchpadMouseY = event.getY(0);
+                beginTouchpadMouseGesture(event);
                 scheduleTouchpadTapDrag();
                 return true;
             }
@@ -2499,11 +2527,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             touchpadMouseActive = true;
             touchpadOneFingerTapActive = true;
             touchpadOneFingerTapStartTime = event.getEventTime();
-            touchpadOneFingerTapStartX = event.getX(0);
-            touchpadOneFingerTapStartY = event.getY(0);
             touchpadOneFingerTapMaxDistance = 0;
-            lastTouchpadMouseX = event.getX(0);
-            lastTouchpadMouseY = event.getY(0);
+            beginTouchpadMouseGesture(event);
             return true;
         }
 
@@ -2515,34 +2540,47 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (!touchpadMouseActive) {
             touchpadMouseActive = true;
             touchpadOneFingerTapActive = false;
-            lastTouchpadMouseX = event.getX(0);
-            lastTouchpadMouseY = event.getY(0);
+            beginTouchpadMouseGesture(event);
             return true;
         }
 
+        // AXIS_RELATIVE_X/Y carries touchpad motion computed before PointerController
+        // clamps the Android cursor to the display bounds, so it keeps flowing when
+        // the cursor is pinned at an edge while coordinate deltas saturate to zero.
+        float relativeDeltaX = getAccumulatedAxisValue(event, MotionEvent.AXIS_RELATIVE_X);
+        float relativeDeltaY = getAccumulatedAxisValue(event, MotionEvent.AXIS_RELATIVE_Y);
+        float deltaX = selectTouchpadMouseDelta(touchpadGestureUsesRelativeAxes,
+                relativeDeltaX, event.getX(0), lastTouchpadMouseX);
+        float deltaY = selectTouchpadMouseDelta(touchpadGestureUsesRelativeAxes,
+                relativeDeltaY, event.getY(0), lastTouchpadMouseY);
+        if (!touchpadGestureUsesRelativeAxes &&
+                (relativeDeltaX != 0 || relativeDeltaY != 0)) {
+            // Device delivers relative axes without declaring a motion range;
+            // switch sources starting from the next gesture boundary.
+            touchpadRelativeAxisDevices.add(event.getDeviceId());
+        }
+        lastTouchpadMouseX = event.getX(0);
+        lastTouchpadMouseY = event.getY(0);
+
+        // Track travel from the deltas we actually send, not absolute coordinates:
+        // with the cursor pinned at an edge the coordinates freeze, which would
+        // keep tap detection armed and fire a ghost click on lift.
+        touchpadOneFingerTravel += (float)Math.hypot(deltaX, deltaY);
+
         if (touchpadOneFingerTapActive) {
-            float distance = (float)Math.sqrt(Math.pow(event.getX(0) - touchpadOneFingerTapStartX, 2) +
-                    Math.pow(event.getY(0) - touchpadOneFingerTapStartY, 2));
-            touchpadOneFingerTapMaxDistance = Math.max(touchpadOneFingerTapMaxDistance, distance);
+            touchpadOneFingerTapMaxDistance = Math.max(touchpadOneFingerTapMaxDistance, touchpadOneFingerTravel);
             if (touchpadOneFingerTapMaxDistance > TOUCHPAD_ONE_FINGER_TAP_DISTANCE_THRESHOLD) {
                 touchpadOneFingerTapActive = false;
             }
         }
 
         if (touchpadTapDragCandidateActive) {
-            float distance = (float)Math.sqrt(Math.pow(event.getX(0) - touchpadTapDragStartX, 2) +
-                    Math.pow(event.getY(0) - touchpadTapDragStartY, 2));
-            if (distance >= TOUCHPAD_TAP_DRAG_MOVE_THRESHOLD ||
+            if (touchpadOneFingerTravel >= TOUCHPAD_TAP_DRAG_MOVE_THRESHOLD ||
                     event.getEventTime() - touchpadTapDragStartTime >= TOUCHPAD_TAP_DRAG_HOLD_DELAY) {
                 cancelTouchpadTapDrag();
                 startTouchpadTapDrag();
             }
         }
-
-        float deltaX = event.getX(0) - lastTouchpadMouseX;
-        float deltaY = event.getY(0) - lastTouchpadMouseY;
-        lastTouchpadMouseX = event.getX(0);
-        lastTouchpadMouseY = event.getY(0);
 
         sendTouchpadMouseMove(deltaX, deltaY);
 
