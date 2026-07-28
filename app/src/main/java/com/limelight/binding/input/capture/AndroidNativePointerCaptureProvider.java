@@ -28,15 +28,26 @@ public class AndroidNativePointerCaptureProvider extends AndroidPointerIconCaptu
         return Build.VERSION.SDK_INT >= Build.VERSION_CODES.O;
     }
 
+    static boolean isPointerCaptureBlockedDevice(int vendorId, int productId) {
+        return vendorId == 0x21CE && productId == 0xB907;
+    }
+
     // We only capture the pointer if we have a compatible InputDevice
     // present. This is a workaround for an Android 12 regression causing
     // incorrect mouse input when using the SPen.
     // https://github.com/moonlight-stream/moonlight-android/issues/1030
     private boolean hasCaptureCompatibleInputDevice() {
+        boolean hasCompatibleDevice = false;
+
         for (int id : InputDevice.getDeviceIds()) {
             InputDevice device = InputDevice.getDevice(id);
             if (device == null) {
                 continue;
+            }
+
+            // ZUI disables this touchpad's InputReader mapper while pointer capture is active.
+            if (isPointerCaptureBlockedDevice(device.getVendorId(), device.getProductId())) {
+                return false;
             }
 
             // Skip touchscreens when considering compatible capture devices.
@@ -54,11 +65,11 @@ public class AndroidNativePointerCaptureProvider extends AndroidPointerIconCaptu
             if (device.supportsSource(InputDevice.SOURCE_MOUSE) ||
                     device.supportsSource(InputDevice.SOURCE_MOUSE_RELATIVE) ||
                     device.supportsSource(InputDevice.SOURCE_TOUCHPAD)) {
-                return true;
+                hasCompatibleDevice = true;
             }
         }
 
-        return false;
+        return hasCompatibleDevice;
     }
 
     @Override
@@ -109,13 +120,19 @@ public class AndroidNativePointerCaptureProvider extends AndroidPointerIconCaptu
         }, 500);
     }
 
+    static boolean isRelativeMouseEvent(int eventSource, int toolType) {
+        return eventSource == InputDevice.SOURCE_MOUSE_RELATIVE &&
+                toolType != MotionEvent.TOOL_TYPE_STYLUS &&
+                toolType != MotionEvent.TOOL_TYPE_ERASER;
+    }
+
     @Override
     public boolean eventHasRelativeMouseAxes(MotionEvent event) {
         // SOURCE_MOUSE_RELATIVE is how SOURCE_MOUSE appears when our view has pointer capture.
         // SOURCE_TOUCHPAD will have relative axes populated iff our view has pointer capture.
         // See https://developer.android.com/reference/android/view/View#requestPointerCapture()
         int eventSource = event.getSource();
-        return (eventSource == InputDevice.SOURCE_MOUSE_RELATIVE && event.getToolType(0) == MotionEvent.TOOL_TYPE_MOUSE) ||
+        return isRelativeMouseEvent(eventSource, event.getToolType(0)) ||
                 (eventSource == InputDevice.SOURCE_TOUCHPAD && targetView.hasPointerCapture());
     }
 

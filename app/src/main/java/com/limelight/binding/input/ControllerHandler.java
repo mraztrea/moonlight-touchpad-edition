@@ -315,10 +315,15 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         }
     }
 
-    private static boolean hasJoystickAxes(InputDevice device) {
-        return (device.getSources() & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK &&
-                getMotionRangeForJoystickAxis(device, MotionEvent.AXIS_X) != null &&
-                getMotionRangeForJoystickAxis(device, MotionEvent.AXIS_Y) != null;
+    public static boolean hasJoystickAxes(InputDevice device) {
+        return device != null && hasJoystickAxes(device.getSources(),
+                getMotionRangeForJoystickAxis(device, MotionEvent.AXIS_X) != null,
+                getMotionRangeForJoystickAxis(device, MotionEvent.AXIS_Y) != null);
+    }
+
+    static boolean hasJoystickAxes(int sources, boolean hasXAxis, boolean hasYAxis) {
+        return (sources & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK &&
+                hasXAxis && hasYAxis;
     }
 
     private static boolean hasGamepadButtons(InputDevice device) {
@@ -604,7 +609,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         return type == MoonBridge.LI_CTYPE_PS;
     }
 
-    private static boolean isExternal(InputDevice dev) {
+    public static boolean isExternal(InputDevice dev) {
         // The ASUS Tinker Board inaccurately reports Bluetooth gamepads as internal,
         // causing shouldIgnoreBack() to believe it should pass through back as a
         // navigation event for any attached gamepads.

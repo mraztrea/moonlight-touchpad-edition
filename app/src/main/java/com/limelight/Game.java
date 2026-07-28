@@ -96,7 +96,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private int lastButtonState = 0;
     private boolean touchpadMouseActive = false;
     private float lastTouchpadMouseX, lastTouchpadMouseY;
-    private float touchpadMouseRemainderX, touchpadMouseRemainderY;
+    private final TouchpadMouseDeltaAccumulator touchpadMouseDeltaAccumulator =
+            new TouchpadMouseDeltaAccumulator();
     private boolean touchpadOneFingerTapActive = false;
     private boolean touchpadPrimaryButtonDown = false;
     private long touchpadOneFingerTapStartTime;
@@ -828,6 +829,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
 
+        if (!hasFocus) {
+            resetTouchpadGestureState();
+        }
+
         // We can't guarantee the state of modifiers keys which may have
         // lifted while focus was not on us. Clear the modifier state.
         this.modifierFlags = 0;
@@ -1255,6 +1260,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
         }
         else {
+            resetTouchpadGestureState();
             inputCaptureProvider.disableCapture();
         }
 
@@ -1876,14 +1882,35 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return false;
         }
 
-        String deviceName = device.getName() != null ? device.getName().toLowerCase(Locale.US) : "";
-        boolean looksLikeTabletKeyboardTouchpad =
-                deviceName.contains("touchpad") ||
-                (deviceName.contains("xiaomi") && deviceName.contains("touch"));
+        InputDevice.MotionRange xRange =
+                device.getMotionRange(MotionEvent.AXIS_X, InputDevice.SOURCE_MOUSE);
+        InputDevice.MotionRange yRange =
+                device.getMotionRange(MotionEvent.AXIS_Y, InputDevice.SOURCE_MOUSE);
+        boolean hasMouseXRange = xRange != null && xRange.getMax() > xRange.getMin();
+        boolean hasMouseYRange = yRange != null && yRange.getMax() > yRange.getMin();
 
-        return (device.supportsSource(InputDevice.SOURCE_TOUCHPAD) || looksLikeTabletKeyboardTouchpad) &&
+        return isTouchpadEvent(eventSource, device.getSources(), event.getToolType(0),
+                ControllerHandler.isExternal(device), hasMouseXRange, hasMouseYRange);
+    }
+
+    static boolean isTouchpadEvent(int eventSource, int deviceSources, int toolType,
+            boolean isExternal, boolean hasMouseXRange, boolean hasMouseYRange) {
+        if (eventSource == InputDevice.SOURCE_TOUCHPAD) {
+            return true;
+        }
+
+        boolean nativeTouchpad =
+                (deviceSources & InputDevice.SOURCE_TOUCHPAD) == InputDevice.SOURCE_TOUCHPAD;
+        boolean compositeKeyboardTouchpad = isExternal &&
+                toolType == MotionEvent.TOOL_TYPE_FINGER &&
+                (deviceSources & InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD &&
+                (deviceSources & InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE &&
+                hasMouseXRange && hasMouseYRange;
+
+        return (nativeTouchpad || compositeKeyboardTouchpad) &&
                 ((eventSource & InputDevice.SOURCE_CLASS_POSITION) != 0 ||
                         (eventSource & InputDevice.SOURCE_CLASS_POINTER) != 0 ||
+                        (eventSource & InputDevice.SOURCE_CLASS_TRACKBALL) != 0 ||
                         (eventSource & InputDevice.SOURCE_TOUCHPAD) == InputDevice.SOURCE_TOUCHPAD);
     }
 
@@ -1914,6 +1941,32 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private static short clampToShort(int value) {
         return (short)Math.max(Short.MIN_VALUE, Math.min(Short.MAX_VALUE, value));
+    }
+
+    private void sendRawMouseMove(short deltaX, short deltaY) {
+        if (deltaX == 0 && deltaY == 0) {
+            return;
+        }
+
+        if (prefConfig.absoluteMouseMode) {
+            conn.sendMouseMoveAsMousePosition(deltaX, deltaY,
+                    (short)streamView.getWidth(), (short)streamView.getHeight());
+        }
+        else {
+            conn.sendMouseMove(deltaX, deltaY);
+        }
+    }
+
+    private boolean sendTouchpadMouseMove(float rawDeltaX, float rawDeltaY) {
+        float speedFactor = prefConfig.touchpadMouseSpeed / 100.0f;
+        int deltaX = touchpadMouseDeltaAccumulator.addX(rawDeltaX, speedFactor);
+        int deltaY = touchpadMouseDeltaAccumulator.addY(rawDeltaY, speedFactor);
+        if (deltaX == 0 && deltaY == 0) {
+            return false;
+        }
+
+        sendRawMouseMove(clampToShort(deltaX), clampToShort(deltaY));
+        return true;
     }
 
     private boolean sendMouseScrollAmounts(int verticalAmount, int horizontalAmount) {
@@ -1985,6 +2038,49 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private void cancelTouchpadTapDrag() {
         touchpadGestureHandler.removeCallbacks(touchpadTapDragRunnable);
+    }
+
+    private void resetTouchpadGestureState() {
+        cancelTouchpadTapDrag();
+        if (touchpadPrimaryButtonDown) {
+            conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
+        }
+        releaseTouchpadAltTab();
+
+        touchpadMouseActive = false;
+        lastTouchpadMouseX = lastTouchpadMouseY = 0;
+        touchpadMouseDeltaAccumulator.reset();
+        touchpadOneFingerTapActive = false;
+        touchpadPrimaryButtonDown = false;
+        touchpadOneFingerTapStartTime = 0;
+        touchpadOneFingerTapStartX = touchpadOneFingerTapStartY = 0;
+        touchpadOneFingerTapMaxDistance = 0;
+        lastTouchpadLeftTapTime = 0;
+        lastTouchpadLeftTapX = lastTouchpadLeftTapY = 0;
+        touchpadTapDragCandidateActive = false;
+        touchpadTapDragStartTime = 0;
+        touchpadTapDragStartX = touchpadTapDragStartY = 0;
+
+        touchpadScrollActive = false;
+        touchpadScrollDirection = TOUCHPAD_SCROLL_DIRECTION_NONE;
+        lastTouchpadScrollX = lastTouchpadScrollY = 0;
+        touchpadScrollRemainderX = touchpadScrollRemainderY = 0;
+        touchpadTwoFingerTapActive = false;
+        touchpadTwoFingerTapStartTime = 0;
+        touchpadTwoFingerTapStartX = touchpadTwoFingerTapStartY = 0;
+        touchpadTwoFingerTapMaxDistance = 0;
+        touchpadPinchActive = false;
+        lastTouchpadPinchSpan = 0;
+        touchpadPinchStartSpan = 0;
+        touchpadPinchRemainder = 0;
+
+        touchpadThreeFingerActive = false;
+        touchpadThreeFingerTapActive = false;
+        touchpadThreeFingerGestureSent = false;
+        touchpadThreeFingerStartTime = 0;
+        touchpadThreeFingerStartX = touchpadThreeFingerStartY = 0;
+        touchpadThreeFingerLastStepX = touchpadThreeFingerLastStepY = 0;
+        touchpadThreeFingerMaxDistance = 0;
     }
 
     private void startTouchpadTapDrag() {
@@ -2081,7 +2177,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             touchpadOneFingerTapActive = false;
             touchpadTapDragCandidateActive = false;
             lastTouchpadLeftTapTime = 0;
-            touchpadMouseRemainderX = touchpadMouseRemainderY = 0;
+            touchpadMouseDeltaAccumulator.reset();
             touchpadScrollActive = true;
             touchpadScrollDirection = TOUCHPAD_SCROLL_DIRECTION_NONE;
             touchpadScrollRemainderX = touchpadScrollRemainderY = 0;
@@ -2111,7 +2207,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             touchpadMouseActive = false;
             touchpadOneFingerTapActive = false;
             lastTouchpadLeftTapTime = 0;
-            touchpadMouseRemainderX = touchpadMouseRemainderY = 0;
+            touchpadMouseDeltaAccumulator.reset();
             touchpadScrollActive = false;
             touchpadScrollDirection = TOUCHPAD_SCROLL_DIRECTION_NONE;
             touchpadTwoFingerTapActive = false;
@@ -2397,7 +2493,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             touchpadOneFingerTapActive = false;
             touchpadTapDragCandidateActive = false;
             cancelTouchpadTapDrag();
-            touchpadMouseRemainderX = touchpadMouseRemainderY = 0;
+            touchpadMouseDeltaAccumulator.reset();
             return true;
         }
 
@@ -2446,52 +2542,59 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
         }
 
-        float speedFactor = prefConfig.touchpadMouseSpeed / 100.0f;
-        touchpadMouseRemainderX += (event.getX(0) - lastTouchpadMouseX) * speedFactor;
-        touchpadMouseRemainderY += (event.getY(0) - lastTouchpadMouseY) * speedFactor;
+        float deltaX = event.getX(0) - lastTouchpadMouseX;
+        float deltaY = event.getY(0) - lastTouchpadMouseY;
         lastTouchpadMouseX = event.getX(0);
         lastTouchpadMouseY = event.getY(0);
 
-        int deltaX = Math.round(touchpadMouseRemainderX);
-        int deltaY = Math.round(touchpadMouseRemainderY);
-
-        if (deltaX != 0) {
-            touchpadMouseRemainderX -= deltaX;
-        }
-        if (deltaY != 0) {
-            touchpadMouseRemainderY -= deltaY;
-        }
-
-        if (deltaX != 0 || deltaY != 0) {
-            if (prefConfig.absoluteMouseMode) {
-                conn.sendMouseMoveAsMousePosition(clampToShort(deltaX), clampToShort(deltaY),
-                        (short)streamView.getWidth(), (short)streamView.getHeight());
-            }
-            else {
-                conn.sendMouseMove(clampToShort(deltaX), clampToShort(deltaY));
-            }
-        }
+        sendTouchpadMouseMove(deltaX, deltaY);
 
         return true;
+    }
+
+    static boolean shouldTryTouchpadRelativeMove(boolean hasRelativeMouseAxes) {
+        return !hasRelativeMouseAxes;
+    }
+
+    static boolean shouldUseAbsoluteMouseFallback(int eventSource) {
+        return eventSource != InputDevice.SOURCE_MOUSE_RELATIVE;
+    }
+
+    static boolean shouldApplyTouchpadMouseSpeed(int toolType) {
+        return toolType == MotionEvent.TOOL_TYPE_FINGER;
     }
 
     // Returns true if the event was consumed
     // NB: View is only present if called from a view callback
     private boolean handleMotionEvent(View view, MotionEvent event) {
+        int eventSource = event.getSource();
+        boolean touchpadEvent = isTouchpadEvent(event, eventSource);
+        if (BuildConfig.DEBUG) {
+            InputDevice device = event.getDevice();
+            boolean hasPointerCapture = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                    streamView.hasPointerCapture();
+            android.util.Log.i("Moonlight", String.format(Locale.US,
+                    "MOTION src=0x%08X devSrc=0x%08X tool=%d action=%d ptrs=%d " +
+                            "x=%.1f y=%.1f relX=%.2f relY=%.2f capture=%b grabbed=%b touchpadEvent=%b",
+                    eventSource, device != null ? device.getSources() : 0,
+                    event.getToolType(0), event.getActionMasked(), event.getPointerCount(),
+                    event.getX(0), event.getY(0),
+                    event.getAxisValue(MotionEvent.AXIS_RELATIVE_X),
+                    event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y),
+                    hasPointerCapture, grabbedInput, touchpadEvent));
+        }
+
         // Pass through mouse/touch/joystick input if we're not grabbing
         if (!grabbedInput) {
             return false;
         }
-
-        int eventSource = event.getSource();
-        int deviceSources = event.getDevice() != null ? event.getDevice().getSources() : 0;
-        boolean touchpadEvent = isTouchpadEvent(event, eventSource);
         if (!touchpadEvent && (eventSource & InputDevice.SOURCE_CLASS_JOYSTICK) != 0) {
             if (controllerHandler.handleMotionEvent(event)) {
                 return true;
             }
         }
-        else if (!touchpadEvent && (deviceSources & InputDevice.SOURCE_CLASS_JOYSTICK) != 0 && controllerHandler.tryHandleTouchpadEvent(event)) {
+        else if (!touchpadEvent && ControllerHandler.hasJoystickAxes(event.getDevice()) &&
+                controllerHandler.tryHandleTouchpadEvent(event)) {
             return true;
         }
         else if (touchpadEvent ||
@@ -2558,25 +2661,20 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 // Always update the position before sending any button events. If we're
                 // dealing with a stylus without hover support, our position might be
                 // significantly different than before.
-                boolean handledRelativeMouseMotion = false;
-                if (inputCaptureProvider.eventHasRelativeMouseAxes(event)) {
-                    // Send the deltas straight from the motion event
-                    short deltaX = (short)inputCaptureProvider.getRelativeAxisX(event);
-                    short deltaY = (short)inputCaptureProvider.getRelativeAxisY(event);
-
-                    if (deltaX != 0 || deltaY != 0) {
-                        if (prefConfig.absoluteMouseMode) {
-                            // NB: view may be null, but we can unconditionally use streamView because we don't need to adjust
-                            // relative axis deltas for the position of the streamView within the parent's coordinate system.
-                            conn.sendMouseMoveAsMousePosition(deltaX, deltaY, (short)streamView.getWidth(), (short)streamView.getHeight());
-                        }
-                        else {
-                            conn.sendMouseMove(deltaX, deltaY);
-                        }
-                        handledRelativeMouseMotion = true;
+                boolean handledRelativeMouseMotion =
+                        inputCaptureProvider.eventHasRelativeMouseAxes(event);
+                if (handledRelativeMouseMotion) {
+                    float deltaX = inputCaptureProvider.getRelativeAxisX(event);
+                    float deltaY = inputCaptureProvider.getRelativeAxisY(event);
+                    if (shouldApplyTouchpadMouseSpeed(event.getToolType(0))) {
+                        sendTouchpadMouseMove(deltaX, deltaY);
+                    }
+                    else {
+                        sendRawMouseMove((short)deltaX, (short)deltaY);
                     }
                 }
-                if (!handledRelativeMouseMotion && trySendTouchpadRelativeMove(event, eventSource)) {
+                if (shouldTryTouchpadRelativeMove(handledRelativeMouseMotion) &&
+                        trySendTouchpadRelativeMove(event, eventSource)) {
                     lastButtonState = buttonState;
                     return true;
                 }
@@ -2610,7 +2708,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     // If our host supports pen events, send it directly
                     return true;
                 }
-                else if (view != null) {
+                else if (view != null && shouldUseAbsoluteMouseFallback(eventSource)) {
                     // Otherwise send absolute position based on the view for SOURCE_CLASS_POINTER
                     updateMousePosition(view, event);
                 }
@@ -2941,6 +3039,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private void stopConnection() {
         if (connecting || connected) {
+            resetTouchpadGestureState();
             connecting = connected = false;
             updatePipAutoEnter();
 
