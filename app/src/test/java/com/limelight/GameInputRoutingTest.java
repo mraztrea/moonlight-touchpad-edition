@@ -84,6 +84,18 @@ public class GameInputRoutingTest {
     }
 
     @Test
+    public void relativeAxesLatchImmediatelyWithinCurrentGesture() {
+        // Hover-stream touchpads may never deliver another gesture boundary
+        // (no ACTION_UP/HOVER_EXIT between strokes), so a device that starts
+        // reporting relative axes mid-gesture must switch sources on the same
+        // event, not at the next boundary.
+        assertTrue(Game.shouldLatchTouchpadRelativeAxes(false, -8.0f, 0.0f));
+        assertTrue(Game.shouldLatchTouchpadRelativeAxes(false, 0.0f, 3.0f));
+        assertFalse(Game.shouldLatchTouchpadRelativeAxes(false, 0.0f, 0.0f));
+        assertFalse(Game.shouldLatchTouchpadRelativeAxes(true, -8.0f, 0.0f));
+    }
+
+    @Test
     public void devicesWithoutRelativeAxesKeepCoordinateDeltas() {
         assertEquals(5.0f, Game.selectTouchpadMouseDelta(false, 0.0f, 15.0f, 10.0f), 0.0f);
     }

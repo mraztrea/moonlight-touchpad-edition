@@ -2454,6 +2454,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         return useRelativeAxes ? relativeDelta : (absolutePosition - lastPosition);
     }
 
+    static boolean shouldLatchTouchpadRelativeAxes(boolean alreadyUsingRelativeAxes,
+                                                   float relativeDeltaX, float relativeDeltaY) {
+        return !alreadyUsingRelativeAxes && (relativeDeltaX != 0 || relativeDeltaY != 0);
+    }
+
     private boolean trySendTouchpadRelativeMove(MotionEvent event, int eventSource) {
         if (!isTouchpadEvent(event, eventSource)) {
             touchpadMouseActive = false;
@@ -2549,16 +2554,21 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // the cursor is pinned at an edge while coordinate deltas saturate to zero.
         float relativeDeltaX = getAccumulatedAxisValue(event, MotionEvent.AXIS_RELATIVE_X);
         float relativeDeltaY = getAccumulatedAxisValue(event, MotionEvent.AXIS_RELATIVE_Y);
+        if (shouldLatchTouchpadRelativeAxes(touchpadGestureUsesRelativeAxes,
+                relativeDeltaX, relativeDeltaY)) {
+            // Device delivers relative axes without declaring a motion range.
+            // Switch sources on this same event: its motion is counted once,
+            // from the relative axes only, so no delta is double-counted. A
+            // hover-stream touchpad may never deliver another gesture boundary,
+            // so deferring the switch could leave clamped coordinate deltas
+            // in use forever.
+            touchpadRelativeAxisDevices.add(event.getDeviceId());
+            touchpadGestureUsesRelativeAxes = true;
+        }
         float deltaX = selectTouchpadMouseDelta(touchpadGestureUsesRelativeAxes,
                 relativeDeltaX, event.getX(0), lastTouchpadMouseX);
         float deltaY = selectTouchpadMouseDelta(touchpadGestureUsesRelativeAxes,
                 relativeDeltaY, event.getY(0), lastTouchpadMouseY);
-        if (!touchpadGestureUsesRelativeAxes &&
-                (relativeDeltaX != 0 || relativeDeltaY != 0)) {
-            // Device delivers relative axes without declaring a motion range;
-            // switch sources starting from the next gesture boundary.
-            touchpadRelativeAxisDevices.add(event.getDeviceId());
-        }
         lastTouchpadMouseX = event.getX(0);
         lastTouchpadMouseY = event.getY(0);
 
